@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Esfera Quicante — VR/AR com Babylon.js</title>
+<style>
+  :root{
+    --ink: #0b0f14;
+    --panel: rgba(10, 14, 20, 0.6);
+    --accent: #5ee1c9;
+    --accent-2: #ff7a59;
+    --text: #eaf2f1;
+    --muted: #9fb3ae;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text);
+  }
+  #renderCanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    outline: none;
+  }
+
+  #hud {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 18px 20px;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  #title-block {
+    pointer-events: none;
+  }
+  #title-block .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4px 0;
+  }
+  #title-block h1 {
+    font-size: 18px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  #instructions {
+    position: fixed;
+    bottom: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--panel);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 999px;
+    padding: 10px 18px;
+    font-size: 13px;
+    color: var(--muted);
+    z-index: 10;
+    max-width: 90vw;
+    text-align: center;
+    transition: opacity 0.4s ease;
+  }
+  #instructions strong { color: var(--text); font-weight: 600; }
+
+  #xr-fallback-note {
+    position: fixed;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 122, 89, 0.12);
+    border: 1px solid rgba(255, 122, 89, 0.35);
+    color: #ffcabb;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 12px;
+    z-index: 10;
+    display: none;
+    max-width: 88vw;
+    text-align: center;
+  }
+
+  #stats {
+    position: fixed;
+    top: 18px;
+    right: 20px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--muted);
+    z-index: 10;
+    pointer-events: none;
+  }
+  #stats span { color: var(--accent-2); font-weight: 600; }
+
+  /* Babylon's default XR button gets restyled to match our palette */
+  .babylonVRicon, .xr-button-overlay button {
+    filter: none !important;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="renderCanvas"></canvas>
+
+<div id="hud">
+  <div id="title-block">
+    <p class="eyebrow">Babylon.js · WebXR</p>
+    <h1>Esfera Quicante</h1>
+  </div>
+  <div id="stats">Quiques: <span id="bounceCount">0</span></div>
+</div>
+
+<div id="xr-fallback-note">Este navegador não suporta WebXR. Exibindo em modo 3D padrão.</div>
+
+<div id="instructions">
+  <strong>Toque ou clique</strong> na esfera para fazê-la quicar mais alto
+</div>
+
+<!-- Babylon.js core, loaders, GUI e motor de física Cannon.js via CDN -->
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+<script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+<script src="https://cdn.babylonjs.com/cannon.js"></script>
+
+<script>
+(async () => {
+  const canvas = document.getElementById("renderCanvas");
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+
+  // ---------------------------------------------------------------------
+  // CRIAÇÃO DA CENA
+  // ---------------------------------------------------------------------
+  const createScene = () => {
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.05, 1);
+
+    // Câmera para o modo "desktop" (fallback caso XR não esteja disponível)
+    const camera = new BABYLON.ArcRotateCamera(
+      "camera",
+      -Math.PI / 2.3,
+      Math.PI / 2.6,
+      6,
+      new BABYLON.Vector3(0, 0.8, 0),
+      scene
+    );
+    camera.attachControl(canvas, true);
+    camera.lowerRadiusLimit = 2.5;
+    camera.upperRadiusLimit = 12;
+    camera.wheelPrecision = 40;
+
+    // Iluminação: hemisférica para ambiente + direcional para sombras
+    const hemiLight = new BABYLON.HemisphericLight("hemiLight", new BABYLON.Vector3(0, 1, 0), scene);
+    hemiLight.intensity = 0.55;
+    hemiLight.groundColor = new BABYLON.Color3(0.05, 0.08, 0.1);
+
+    const dirLight = new BABYLON.DirectionalLight("dirLight", new BABYLON.Vector3(-0.6, -1, 0.4), scene);
+    dirLight.position = new BABYLON.Vector3(4, 8, -4);
+    dirLight.intensity = 1.1;
+
+    const shadowGenerator = new BABYLON.ShadowGenerator(1024, dirLight);
+    shadowGenerator.useBlurExponentialShadowMap = true;
+    shadowGenerator.blurKernel = 32;
+
+    // Chão (fica semi-transparente/oculto em modo AR mais abaixo)
+    const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 8, height: 8 }, scene);
+    const groundMat = new BABYLON.PBRMaterial("groundMat", scene);
+    groundMat.albedoColor = new BABYLON.Color3(0.08, 0.1, 0.12);
+    groundMat.metallic = 0.1;
+    groundMat.roughness = 0.85;
+    groundMat.alpha = 0.9;
+    ground.material = groundMat;
+    ground.receiveShadows = true;
+
+    // Grade sutil no chão para dar noção de escala/profundidade
+    const gridMat = new BABYLON.GridMaterial("gridMat", scene);
+    gridMat.majorUnitFrequency = 1;
+    gridMat.minorUnitVisibility = 0.35;
+    gridMat.gridRatio = 0.5;
+    gridMat.mainColor = new BABYLON.Color3(0.1, 0.13, 0.15);
+    gridMat.lineColor = new BABYLON.Color3(0.35, 0.85, 0.78);
+    gridMat.opacity = 0.65;
+    ground.material = gridMat;
+
+    // Esfera protagonista, com material PBR levemente reflexivo
+    const sphere = BABYLON.MeshBuilder.CreateSphere("sphere", { diameter: 0.6, segments: 32 }, scene);
+    sphere.position.set(0, 3, 0);
+
+    const sphereMat = new BABYLON.PBRMaterial("sphereMat", scene);
+    sphereMat.albedoColor = new BABYLON.Color3(1, 0.48, 0.35); // laranja quente (accent-2)
+    sphereMat.metallic = 0.35;
+    sphereMat.roughness = 0.25;
+    sphereMat.emissiveColor = new BABYLON.Color3(0.12, 0.04, 0.02);
+    sphere.material = sphereMat;
+    shadowGenerator.addShadowCaster(sphere);
+
+    return { scene, camera, ground, sphere, shadowGenerator, dirLight, hemiLight };
+  };
+
+  const { scene, camera, ground, sphere, shadowGenerator } = createScene();
+
+  // ---------------------------------------------------------------------
+  // FÍSICA: gravidade + quique com perda de energia (restituição)
+  // ---------------------------------------------------------------------
+  const gravityVector = new BABYLON.Vector3(0, -9.81, 0);
+  const cannonPlugin = new BABYLON.CannonJSPlugin(true, 10, window.CANNON);
+  scene.enablePhysics(gravityVector, cannonPlugin);
+
+  ground.physicsImpostor = new BABYLON.PhysicsImpostor(
+    ground,
+    BABYLON.PhysicsImpostor.BoxImpostor,
+    { mass: 0, restitution: 0.75, friction: 0.4 },
+    scene
+  );
+
+  sphere.physicsImpostor = new BABYLON.PhysicsImpostor(
+    sphere,
+    BABYLON.PhysicsImpostor.SphereImpostor,
+    { mass: 1, restitution: 0.75, friction: 0.4 },
+    scene
+  );
+
+  // Contador de quiques: detecta quando a esfera está perto do chão e
+  // com velocidade vertical mudando de sinal (colisão com o piso)
+  let bounceCount = 0;
+  const bounceLabel = document.getElementById("bounceCount");
+  let wasFalling = false;
+
+  scene.onBeforeRenderObservable.add(() => {
+    const vel = sphere.physicsImpostor.getLinearVelocity();
+    if (!vel) return;
+    const nearGround = sphere.position.y <= 0.35;
+    const fallingNow = vel.y < -0.05;
+    const risingNow = vel.y > 0.5;
+
+    if (wasFalling && nearGround && risingNow) {
+      bounceCount++;
+      bounceLabel.textContent = bounceCount;
+    }
+    wasFalling = fallingNow;
+  });
+
+  // Clique/toque na esfera aplica um impulso para cima (mais quique)
+  scene.onPointerObservable.add((pointerInfo) => {
+    if (pointerInfo.type === BABYLON.PointerEventTypes.POINTERPICK) {
+      if (pointerInfo.pickInfo.pickedMesh === sphere) {
+        sphere.physicsImpostor.applyImpulse(
+          new BABYLON.Vector3(
+            (Math.random() - 0.5) * 1.5, // leve variação lateral, mais orgânico
+            6,
+            (Math.random() - 0.5) * 1.5
+          ),
+          sphere.getAbsolutePosition()
+        );
+      }
+    }
+  });
+
+  // Reposiciona a esfera se ela sair demais da área de jogo
+  scene.onBeforeRenderObservable.add(() => {
+    if (sphere.position.y < -5) {
+      sphere.physicsImpostor.setLinearVelocity(BABYLON.Vector3.Zero());
+      sphere.physicsImpostor.setAngularVelocity(BABYLON.Vector3.Zero());
+      sphere.position.set(0, 3, 0);
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // WEBXR: suporte a VR (immersive-vr) e AR (immersive-ar) com fallback
+  // ---------------------------------------------------------------------
+  const fallbackNote = document.getElementById("xr-fallback-note");
+
+  const setupXR = async () => {
+    if (!navigator.xr) {
+      fallbackNote.style.display = "block";
+      return null;
+    }
+
+    let xrHelper = null;
+    try {
+      // Tenta primeiro configurar como experiência AR (mundo real + hit-test)
+      const arSupported = await navigator.xr.isSessionSupported?.("immersive-ar").catch(() => false);
+      const vrSupported = await navigator.xr.isSessionSupported?.("immersive-vr").catch(() => false);
+
+      if (!arSupported && !vrSupported) {
+        fallbackNote.style.display = "block";
+        return null;
+      }
+
+      xrHelper = await scene.createDefaultXRExperienceAsync({
+        uiOptions: {
+          sessionMode: arSupported ? "immersive-ar" : "immersive-vr",
+        },
+        optionalFeatures: true,
+      });
+
+      // --- Recurso de Hit-Test (usado em modo AR) ---
+      let hitTestFeature = null;
+      let arRootPlaced = false;
+
+      if (arSupported) {
+        try {
+          hitTestFeature = xrHelper.baseExperience.featuresManager.enableFeature(
+            BABYLON.WebXRHitTest.Name,
+            "latest",
+            { disablePreshotDelay: true }
+          );
+
+          const reticle = BABYLON.MeshBuilder.CreateTorus("reticle", { diameter: 0.2, thickness: 0.02 }, scene);
+          reticle.isVisible = false;
+          const reticleMat = new BABYLON.StandardMaterial("reticleMat", scene);
+          reticleMat.emissiveColor = new BABYLON.Color3(0.37, 0.88, 0.79);
+          reticleMat.disableLighting = true;
+          reticle.material = reticleMat;
+
+          hitTestFeature.onHitTestResultObservable.add((results) => {
+            if (results.length) {
+              reticle.isVisible = true;
+              results[0].transformationMatrix.decompose(undefined, undefined, reticle.position);
+            } else {
+              reticle.isVisible = false;
+            }
+          });
+
+          // Toque na superfície detectada posiciona o "palco" (chão + esfera) ali
+          scene.onPointerObservable.add((pointerInfo) => {
+            if (
+              pointerInfo.type === BABYLON.PointerEventTypes.POINTERDOWN &&
+              reticle.isVisible &&
+              !arRootPlaced
+            ) {
+              ground.position.copyFrom(reticle.position);
+              sphere.position.set(reticle.position.x, reticle.position.y + 2.2, reticle.position.z);
+              sphere.physicsImpostor.setLinearVelocity(BABYLON.Vector3.Zero());
+              arRootPlaced = true;
+              reticle.isVisible = false;
+            }
+          });
+        } catch (e) {
+          console.warn("Hit-test não disponível neste dispositivo:", e);
+        }
+      }
+
+      // Ajusta a cena conforme o modo XR entrado
+      xrHelper.baseExperience.onStateChangedObservable.add((state) => {
+        if (state === BABYLON.WebXRState.IN_XR) {
+          const isAR = xrHelper.baseExperience.sessionManager.sessionMode === "immersive-ar";
+          if (isAR) {
+            // Em AR: chão quase invisível para deixar o ambiente real aparecer,
+            // e a esfera só some no chão real detectado via hit-test.
+            ground.visibility = 0.15;
+            scene.clearColor = new BABYLON.Color4(0, 0, 0, 0); // transparente = passa a câmera real
+          } else {
+            ground.visibility = 1;
+          }
+        } else if (state === BABYLON.WebXRState.NOT_IN_XR) {
+          ground.visibility = 1;
+          scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.05, 1);
+        }
+      });
+
+      // Interação por controle em VR: raycasting/pointer já é habilitado
+      // automaticamente pelo WebXRControllerPointerSelection (feature padrão
+      // do createDefaultXRExperienceAsync), então o mesmo onPointerObservable
+      // com POINTERPICK acima já cobre o "cutucar" a esfera com o controle.
+
+      return xrHelper;
+    } catch (err) {
+      console.warn("WebXR não pôde ser inicializado:", err);
+      fallbackNote.style.display = "block";
+      return null;
+    }
+  };
+
+  await setupXR();
+
+  // ---------------------------------------------------------------------
+  // LOOP DE RENDERIZAÇÃO E RESIZE
+  // ---------------------------------------------------------------------
+  engine.runRenderLoop(() => {
+    scene.render();
+  });
+
+  window.addEventListener("resize", () => {
+    engine.resize();
+  });
+})();
+</script>
+
+</body>
+</html>
